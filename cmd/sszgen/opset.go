@@ -63,6 +63,36 @@ func (p *parseContext) resolveBasicOpset(typ *types.Basic, tags *sizeTag) (opset
 			"DecodeBool({{.Codec}}, &{{.Field}})",
 			[]int{1},
 		}, nil
+	case types.Uint8:
+		if tags != nil && tags.size[0] != 1 {
+			return nil, fmt.Errorf("byte basic type requires ssz-size=1: have %d", tags.size[0])
+		}
+		return &opsetStatic{
+			"DefineUint8({{.Codec}}, &{{.Field}})",
+			"EncodeUint8({{.Codec}}, &{{.Field}})",
+			"DecodeUint8({{.Codec}}, &{{.Field}})",
+			[]int{1},
+		}, nil
+	case types.Uint16:
+		if tags != nil && tags.size[0] != 2 {
+			return nil, fmt.Errorf("uint16 basic type requires ssz-size=2: have %d", tags.size[0])
+		}
+		return &opsetStatic{
+			"DefineUint16({{.Codec}}, &{{.Field}})",
+			"EncodeUint16({{.Codec}}, &{{.Field}})",
+			"DecodeUint16({{.Codec}}, &{{.Field}})",
+			[]int{2},
+		}, nil
+	case types.Uint32:
+		if tags != nil && tags.size[0] != 4 {
+			return nil, fmt.Errorf("uint32 basic type requires ssz-size=4: have %d", tags.size[0])
+		}
+		return &opsetStatic{
+			"DefineUint32({{.Codec}}, &{{.Field}})",
+			"EncodeUint32({{.Codec}}, &{{.Field}})",
+			"DecodeUint32({{.Codec}}, &{{.Field}})",
+			[]int{4},
+		}, nil
 	case types.Uint64:
 		if tags != nil && tags.size[0] != 8 {
 			return nil, fmt.Errorf("uint64 basic type requires ssz-size=8: have %d", tags.size[0])
