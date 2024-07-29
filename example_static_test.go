@@ -58,5 +58,9 @@ func TestTreeerSymmetricObject(t *testing.T) {
 	}
 
 	treeNode := ssz.TreeSequential(withdrawal)
+	hashNode := ssz.HashSequential(withdrawal)
 	fmt.Printf("ROOT %#x\n", treeNode.Hash)
+	if treeNode.Hash != hashNode {
+		t.Errorf("Tree hash mismatch.\nGot:  %#x\nWant: %#x", treeNode.Hash, hashNode)
+	}
 }

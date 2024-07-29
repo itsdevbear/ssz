@@ -80,7 +80,7 @@ var hasherPool = sync.Pool{
 // without hitting Go's GC constantly.
 var treererPool = sync.Pool{
 	New: func() any {
-		codec := &Codec{tre: new(Treerer), has: new(Hasher), enc: new(Encoder)}
+		codec := &Codec{tre: new(Treerer2), has: new(Hasher), enc: new(Encoder)}
 		codec.has.codec = codec
 		codec.tre.codec = codec
 		codec.enc.codec = codec
@@ -256,8 +256,15 @@ func TreeSequential(obj Object) *TreeNode {
 	codec := treererPool.Get().(*Codec)
 	defer treererPool.Put(codec)
 	defer codec.tre.Reset()
+
+	codec.tre.descendLayer()
 	obj.DefineSSZ(codec)
-	return codec.tre.GetRoot()
+	codec.tre.ascendLayer(0)
+
+	if len(codec.tre.chunks) != 1 {
+		panic(fmt.Sprintf("unfinished hashing: left %v", codec.tre.groups))
+	}
+	return &TreeNode{Hash: [32]byte(codec.tre.chunks[0])}
 }
 
 // TreeConcurrent computes the SSZ Merkle tree of the object on a multiple threads.
