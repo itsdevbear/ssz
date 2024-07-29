@@ -7,6 +7,8 @@ package ssz
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
+	"math"
 	"math/big"
 	bitops "math/bits"
 	"runtime"
@@ -26,6 +28,29 @@ func init() {
 
 		hasherZeroCache[i+1] = sha256.Sum256(buf[:])
 	}
+}
+
+// TreeNode represents a node in the Merkle tree
+type TreeNode struct {
+	Value   [32]byte
+	Left    *TreeNode
+	Right   *TreeNode
+	IsEmpty bool
+	Depth   int
+}
+
+// NewNodeWithValue initializes a leaf node.
+func NewNodeWithValue(value [32]byte) *TreeNode {
+	return &TreeNode{Left: nil, Right: nil, Value: value}
+}
+
+func NewEmptyNode(zeroOrderHash [32]byte) *TreeNode {
+	return &TreeNode{Left: nil, Right: nil, Value: zeroOrderHash, IsEmpty: true}
+}
+
+// NewNodeWithLR initializes a branch node.
+func NewNodeWithLR(left, right *TreeNode) *TreeNode {
+	return &TreeNode{Left: left, Right: right, Value: [32]byte{}}
 }
 
 // Treerer2 is an SSZ Merkle Hash Root computer.
@@ -371,6 +396,12 @@ func (h *Treerer2) hashBytes(blob []byte) {
 	h.ascendLayer(0)
 }
 
+func (h *Treerer2) insertNode(value [32]byte) {
+	h.nodes = append(h.nodes, &TreeNode{
+		Value: value,
+	})
+}
+
 // insertChunk adds a chunk to the accumulators, collapsing matching pairs.
 func (h *Treerer2) insertChunk(chunk [32]byte, depth int) {
 	// Insert the chunk into the accumulator
@@ -380,6 +411,7 @@ func (h *Treerer2) insertChunk(chunk [32]byte, depth int) {
 	groups := len(h.groups)
 	if groups > 0 && h.groups[groups-1].layer == h.layer && h.groups[groups-1].depth == depth {
 		h.groups[groups-1].chunks++
+		fmt.Println("not new leaf group")
 	} else {
 		// New leaf group, create it and early return. Nothing to hash with only
 		// one leaf in our chunk list.
@@ -388,11 +420,16 @@ func (h *Treerer2) insertChunk(chunk [32]byte, depth int) {
 			depth:  depth,
 			chunks: 1,
 		})
+		fmt.Println("Inserting new node group during insertChunk:", chunk, depth)
+		h.insertNode(chunk)
+		// Mark inserting a new leaf node
 		return
 	}
 	// Leaf counter incremented, if not yet enough for a hashing round, return
 	group := h.groups[groups-1]
 	if group.chunks != hasherBatch {
+		fmt.Println("Inserting new node not enough for hasing during insertChunk:", chunk, depth)
+		h.insertNode(chunk)
 		return
 	}
 	for {
@@ -400,8 +437,15 @@ func (h *Treerer2) insertChunk(chunk [32]byte, depth int) {
 		// them one by one, so can't all of a sudden overshoot. Hash the next batch
 		// of chunks and update the trackers.
 		chunks := len(h.chunks)
+		fmt.Println("HASHING BATCH")
 		gohashtree.HashChunks(h.chunks[chunks-hasherBatch:], h.chunks[chunks-hasherBatch:])
 		h.chunks = h.chunks[:chunks-hasherBatch/2]
+
+		fmt.Println("BET")
+		for i := 0; i < hasherBatch/2; i++ {
+			fmt.Println("Inserting new internal node group during insertChunk:", h.chunks[chunks-hasherBatch+i])
+			h.insertNode(h.chunks[chunks-hasherBatch+i])
+		}
 
 		group.depth++
 		group.chunks >>= 1
@@ -481,6 +525,10 @@ func (h *Treerer2) ascendLayer(capacity uint64) {
 		chunks := len(h.chunks)
 		gohashtree.HashChunks(h.chunks[chunks-2:], h.chunks[chunks-2:])
 		h.chunks = h.chunks[:chunks-1]
+		for i := 0; i < hasherBatch/2; i++ {
+			h.insertNode(h.chunks[i])
+			fmt.Println("Inserting new node during ascend", h.chunks[i])
+		}
 
 		h.groups[groups-1].depth++
 	}
@@ -525,7 +573,10 @@ func (h *Treerer2) balanceLayer() {
 		chunks := len(h.chunks)
 		gohashtree.HashChunks(h.chunks[chunks-int(group.chunks):], h.chunks[chunks-int(group.chunks):])
 		h.chunks = h.chunks[:chunks-int(group.chunks)>>1]
-
+		for chunk := 0; chunk < len(h.chunks); chunk++ {
+			fmt.Println("Inserting new node during balanceLayer", h.chunks[chunk])
+			h.insertNode(h.chunks[chunk])
+		}
 		group.depth++
 		group.chunks >>= 1
 
@@ -569,4 +620,77 @@ func (h *Treerer2) Reset() {
 	h.chunks = h.chunks[:0]
 	h.groups = h.groups[:0]
 	h.threads = false
+}
+
+// createTree constructs the Merkle tree from the leaf nodes
+func (h *Treerer2) createTree() *TreeNode {
+	fmt.Printf("Starting createTree with %d nodes\n", len(h.nodes))
+	if len(h.nodes) == 0 {
+		fmt.Println("No nodes, returning nil")
+		return nil
+	}
+
+	numnodes := len(h.nodes)
+	depth := floorLog2(numnodes)
+
+	// Start with the leaf nodes
+	currentLevel := h.nodes
+
+	for i := range currentLevel {
+		currentLevel[i].Depth = depth
+	}
+
+	// Continue building levels until we reach the root
+	for len(currentLevel) > 1 {
+		fmt.Printf("Processing level with %d nodes\n", len(currentLevel))
+		var nextLevel []*TreeNode
+
+		for i := 0; i < len(currentLevel); i += 2 {
+			left := currentLevel[i]
+			var right *TreeNode
+
+			if i+1 < len(currentLevel) {
+				right = currentLevel[i+1]
+			} else {
+				// If there's an odd number of nodes, duplicate the last one
+				right = &TreeNode{Value: hasherZeroCache[left.Depth]}
+				fmt.Println("Odd number of nodes, duplicating last one")
+			}
+
+			// Create a new parent node
+			parent := &TreeNode{
+				Left:  left,
+				Right: right,
+				Depth: left.Depth - 1,
+			}
+
+			// Hash the concatenation of left and right child values
+			var data [64]byte
+			copy(data[:32], left.Value[:])
+			copy(data[32:], right.Value[:])
+			parent.Value = sha256.Sum256(data[:])
+
+			fmt.Printf("Created parent node at depth %d with hash %x\n", parent.Depth, parent.Value)
+
+			nextLevel = append(nextLevel, parent)
+		}
+
+		currentLevel = nextLevel
+	}
+
+	// The last remaining node is the root
+	fmt.Printf("Returning root node with hash %x\n", currentLevel[0].Value)
+	return currentLevel[0]
+}
+
+func isPowerOfTwo(n int) bool {
+	return (n & (n - 1)) == 0
+}
+
+func floorLog2(n int) int {
+	return int(math.Floor(math.Log2(float64(n))))
+}
+
+func powerTwo(n int) int {
+	return int(math.Pow(2, float64(n)))
 }

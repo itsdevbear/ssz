@@ -51,16 +51,17 @@ func TestEncodeStaticObject(t *testing.T) {
 
 func TestTreeerSymmetricObject(t *testing.T) {
 	withdrawal := &Withdrawal{
-		Index:     999,
-		Validator: 888,
+		Index:     11,
+		Validator: 12,
 		Address:   Address{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20},
-		Amount:    777,
+		Amount:    13,
 	}
 
 	treeNode := ssz.TreeSequential(withdrawal)
 	hashNode := ssz.HashSequential(withdrawal)
-	fmt.Printf("ROOT %#x\n", treeNode.Hash)
-	if treeNode.Hash != hashNode {
-		t.Errorf("Tree hash mismatch.\nGot:  %#x\nWant: %#x", treeNode.Hash, hashNode)
+	fmt.Printf("ROOT %#x\n", treeNode.Value)
+	if treeNode.Value != hashNode {
+		t.Errorf("Tree hash mismatch.\nGot:  %#x\nWant: %#x", treeNode.Value, hashNode)
 	}
+	panic("done")
 }
