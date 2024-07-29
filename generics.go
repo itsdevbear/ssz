@@ -30,8 +30,8 @@ type newableDynamicObject[U any] interface {
 // generics compiler that it cannot represent arrays of arbitrary sizes with
 // one shorthand notation.
 type commonBytesLengths interface {
-	// fork | address | verkle-stem | hash | pubkey | committee | signature | bloom
-	~[4]byte | ~[20]byte | ~[31]byte | ~[32]byte | ~[48]byte | ~[64]byte | ~[96]byte | ~[256]byte
+	// fork | address | verkle-stem | hash | pubkey | committee | signature | bloom | blob & tx (nice fuckup dev kek)
+	~[4]byte | ~[20]byte | ~[31]byte | ~[32]byte | ~[48]byte | ~[64]byte | ~[96]byte | ~[256]byte | ~[131072]byte | ~[]byte
 }
 
 // commonUint64sLengths is a generic type whose purpose is to permit that fixed-
