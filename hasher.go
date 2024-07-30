@@ -44,6 +44,13 @@ func init() {
 	}
 }
 
+type Node struct {
+	Hash   [32]byte
+	Left   *Node
+	Right  *Node
+	Parent *Node
+}
+
 // Hasher is an SSZ Merkle Hash Root computer.
 type Hasher struct {
 	threads bool // Whether threaded hashing is allowed or not
@@ -54,6 +61,10 @@ type Hasher struct {
 
 	codec  *Codec // Self-referencing to pass DefineSSZ calls through (API trick)
 	bitbuf []byte // Bitlist conversion buffer
+
+	// ... (existing fields)
+	nodes []*Node
+	root  *Node
 }
 
 // groupStats is a metadata structure tracking the stats of a same-level group
@@ -396,6 +407,12 @@ func (h *Hasher) hashBytes(blob []byte) {
 
 // insertChunk adds a chunk to the accumulators, collapsing matching pairs.
 func (h *Hasher) insertChunk(chunk [32]byte, depth int) {
+	// Create a new leaf node
+	newNode := &Node{Hash: chunk}
+
+	// Insert the node into the accumulator
+	h.nodes = append(h.nodes, newNode)
+
 	// Insert the chunk into the accumulator
 	h.chunks = append(h.chunks, chunk)
 
@@ -419,6 +436,29 @@ func (h *Hasher) insertChunk(chunk [32]byte, depth int) {
 		return
 	}
 	for {
+
+		// We've reached exactly the batch number of chunks
+		nodes := len(h.nodes)
+		for i := nodes - hasherBatch; i < nodes; i += 2 {
+			left := h.nodes[i]
+			right := h.nodes[i+1]
+
+			parentHash := [][32]byte{[32]byte{}}
+			gohashtree.HashChunks(parentHash, [][32]byte{left.Hash, right.Hash})
+
+			parent := &Node{
+				Hash:  parentHash[0],
+				Left:  left,
+				Right: right,
+			}
+
+			left.Parent = parent
+			right.Parent = parent
+
+			h.nodes[i/2] = parent
+		}
+		h.nodes = h.nodes[:nodes-hasherBatch/2]
+
 		// We've reached **exactly** the batch number of chunks. Note, we're adding
 		// them one by one, so can't all of a sudden overshoot. Hash the next batch
 		// of chunks and update the trackers.
@@ -449,6 +489,10 @@ func (h *Hasher) insertChunk(chunk [32]byte, depth int) {
 		h.groups[groups-1] = group
 		return
 	}
+}
+
+func (h *Hasher) Root() *Node {
+	return h.root
 }
 
 // insertBlobChunks splits up the blob into 32 byte chunks and adds them to the
@@ -486,6 +530,9 @@ func (h *Hasher) ascendLayer(capacity uint64) {
 	// Before even considering extending the layer to capacity, balance any
 	// partial sub-tries to their completion.
 	h.balanceLayer()
+
+	h.root = h.nodes[len(h.nodes)-1]
+	h.nodes = h.nodes[:len(h.nodes)-1]
 
 	// Last group was reduced to a single root hash. If the capacity used during
 	// hashing it was less than what the container slot required, keep expanding
@@ -542,9 +589,31 @@ func (h *Hasher) balanceLayer() {
 		// the previous one and then see.
 		if group.chunks&0x1 == 1 {
 			// Group unbalanced, expand with a zero sub-trie
-			h.chunks = append(h.chunks, hasherZeroCache[group.depth])
+			zeroNode := &Node{Hash: hasherZeroCache[group.depth]}
+			h.nodes = append(h.nodes, zeroNode)
 			group.chunks++
 		}
+
+		nodes := len(h.nodes)
+		for i := nodes - int(group.chunks); i < nodes; i += 2 {
+			left := h.nodes[i]
+			right := h.nodes[i+1]
+
+			parentHash := [][32]byte{[32]byte{}}
+			gohashtree.HashChunks(parentHash, [][32]byte{left.Hash, right.Hash})
+
+			parent := &Node{
+				Hash:  parentHash[0],
+				Left:  left,
+				Right: right,
+			}
+			left.Parent = parent
+			right.Parent = parent
+
+			h.nodes[i/2] = parent
+		}
+		h.nodes = h.nodes[:nodes-int(group.chunks)/2]
+
 		chunks := len(h.chunks)
 		gohashtree.HashChunks(h.chunks[chunks-int(group.chunks):], h.chunks[chunks-int(group.chunks):])
 		h.chunks = h.chunks[:chunks-int(group.chunks)>>1]
@@ -592,4 +661,7 @@ func (h *Hasher) Reset() {
 	h.chunks = h.chunks[:0]
 	h.groups = h.groups[:0]
 	h.threads = false
+
+	h.nodes = h.nodes[:0]
+	h.root = nil
 }

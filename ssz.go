@@ -213,6 +213,7 @@ func HashSequential(obj Object) [32]byte {
 	if len(codec.has.chunks) != 1 {
 		panic(fmt.Sprintf("unfinished hashing: left %v", codec.has.groups))
 	}
+
 	return codec.has.chunks[0]
 }
 
