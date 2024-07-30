@@ -18,93 +18,92 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// hasherBatch is the number of chunks to batch up before calling the hasher.
-const hasherBatch = 8 // *MUST* be power of 2
-
-// concurrencyThreshold is the data size above which a new sub-hasher is spun up
-// for each dynamic field instead of hashing sequentially.
-const concurrencyThreshold = 65536
+// treererBatch is the number of chunks to batch up before calling the treerer.
+const treererBatch = 8 // *MUST* be power of 2
 
 // Some helpers to avoid occasional allocations
 var (
-	hasherBoolFalse = [32]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	hasherBoolTrue  = [32]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	treererBoolFalse = [32]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	treererBoolTrue  = [32]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
-	// hasherZeroCache is a pre-computed table of all-zero sub-trie hashing
-	hasherZeroCache [65][32]byte
+	// treererZeroCache is a pre-computed table of all-zero sub-trie treeing
+	treererZeroCache [65][32]byte
 )
 
 func init() {
 	var buf [64]byte
-	for i := 0; i < len(hasherZeroCache)-1; i++ {
-		copy(buf[:32], hasherZeroCache[i][:])
-		copy(buf[32:], hasherZeroCache[i][:])
+	for i := 0; i < len(treererZeroCache)-1; i++ {
+		copy(buf[:32], treererZeroCache[i][:])
+		copy(buf[32:], treererZeroCache[i][:])
 
-		hasherZeroCache[i+1] = sha256.Sum256(buf[:])
+		treererZeroCache[i+1] = sha256.Sum256(buf[:])
 	}
 }
 
-// Hasher is an SSZ Merkle Hash Root computer.
-type Hasher struct {
-	threads bool // Whether threaded hashing is allowed or not
+type Node struct {
+	Hash   [32]byte
+	Left   *Node
+	Right  *Node
+	Parent *Node
+}
 
-	chunks [][32]byte   // Scratch space for in-progress hashing chunks
-	groups []groupStats // Hashing progress tracking for the chunk groups
-	layer  int          // Layer depth being hasher now
+// Treerer is an SSZ Merkle Hash Root computer.
+type Treerer struct {
+	threads bool // Whether threaded treeing is allowed or not
+
+	chunks [][32]byte   // Scratch space for in-progress treeing chunks
+	groups []groupStats // Treeing progress tracking for the chunk groups
+	layer  int          // Layer depth being treerer now
 
 	codec  *Codec // Self-referencing to pass DefineSSZ calls through (API trick)
 	bitbuf []byte // Bitlist conversion buffer
+
+	// ... (existing fields)
+	nodes []*Node
+	root  *Node
 }
 
-// groupStats is a metadata structure tracking the stats of a same-level group
-// of data chunks waiting to be hashed.
-type groupStats struct {
-	layer  int // Layer this chunk group is from
-	depth  int // Depth this chunk group is from
-	chunks int // Number of chunks in this group
-}
-
-// HashBool hashes a boolean.
-func HashBool[T ~bool](h *Hasher, v T) {
+// TreeBool trees a boolean.
+func TreeBool[T ~bool](h *Treerer, v T) {
 	if !v {
-		h.insertChunk(hasherBoolFalse, 0)
+		h.insertChunk(treererBoolFalse, 0)
 	} else {
-		h.insertChunk(hasherBoolTrue, 0)
+		h.insertChunk(treererBoolTrue, 0)
 	}
 }
 
-// HashUint8 hashes a uint8.
-func HashUint8[T ~uint8](h *Hasher, n T) {
+// TreeUint8 trees a uint8.
+func TreeUint8[T ~uint8](h *Treerer, n T) {
 	var buffer [32]byte
 	buffer[0] = uint8(n)
 	h.insertChunk(buffer, 0)
 }
 
-// HashUint16 hashes a uint16.
-func HashUint16[T ~uint16](h *Hasher, n T) {
+// TreeUint16 trees a uint16.
+func TreeUint16[T ~uint16](h *Treerer, n T) {
 	var buffer [32]byte
 	binary.LittleEndian.PutUint16(buffer[:], uint16(n))
 	h.insertChunk(buffer, 0)
 }
 
-// HashUint32 hashes a uint32.
-func HashUint32[T ~uint32](h *Hasher, n T) {
+// TreeUint32 trees a uint32.
+func TreeUint32[T ~uint32](h *Treerer, n T) {
 	var buffer [32]byte
 	binary.LittleEndian.PutUint32(buffer[:], uint32(n))
 	h.insertChunk(buffer, 0)
 }
 
-// HashUint64 hashes a uint64.
-func HashUint64[T ~uint64](h *Hasher, n T) {
+// TreeUint64 trees a uint64.
+func TreeUint64[T ~uint64](h *Treerer, n T) {
 	var buffer [32]byte
 	binary.LittleEndian.PutUint64(buffer[:], uint64(n))
 	h.insertChunk(buffer, 0)
 }
 
-// HashUint256 hashes a uint256.
+// TreeUint256 trees a uint256.
 //
-// Note, a nil pointer is hashed as zero.
-func HashUint256(h *Hasher, n *uint256.Int) {
+// Note, a nil pointer is treed as zero.
+func TreeUint256(h *Treerer, n *uint256.Int) {
 	var buffer [32]byte
 	if n != nil {
 		n.MarshalSSZInto(buffer[:])
@@ -112,10 +111,10 @@ func HashUint256(h *Hasher, n *uint256.Int) {
 	h.insertChunk(buffer, 0)
 }
 
-// HashUint256BigInt hashes a big.Int as uint256.
+// TreeUint256BigInt trees a big.Int as uint256.
 //
-// Note, a nil pointer is hashed as zero.
-func HashUint256BigInt(h *Hasher, n *big.Int) {
+// Note, a nil pointer is treed as zero.
+func TreeUint256BigInt(h *Treerer, n *big.Int) {
 	var buffer [32]byte
 	if n != nil {
 		var bufint uint256.Int // No pointer, alloc free
@@ -125,52 +124,52 @@ func HashUint256BigInt(h *Hasher, n *big.Int) {
 	h.insertChunk(buffer, 0)
 }
 
-// HashStaticBytes hashes a static binary blob.
+// TreeStaticBytes trees a static binary blob.
 //
 // The blob is passed by pointer to avoid high stack copy costs and a potential
 // escape to the heap.
-func HashStaticBytes[T commonBytesLengths](h *Hasher, blob *T) {
+func TreeStaticBytes[T commonBytesLengths](h *Treerer, blob *T) {
 	// The code below should have used `blob[:]`, alas Go's generics compiler
 	// is missing that (i.e. a bug): https://github.com/golang/go/issues/51740
-	h.hashBytes(unsafe.Slice(&(*blob)[0], len(*blob)))
+	h.treeBytes(unsafe.Slice(&(*blob)[0], len(*blob)))
 }
 
-// HashCheckedStaticBytes hashes a static binary blob.
-func HashCheckedStaticBytes(h *Hasher, blob []byte) {
-	h.hashBytes(blob)
+// TreeCheckedStaticBytes trees a static binary blob.
+func TreeCheckedStaticBytes(h *Treerer, blob []byte) {
+	h.treeBytes(blob)
 }
 
-// HashDynamicBytes hashes a dynamic binary blob.
-func HashDynamicBytes(h *Hasher, blob []byte, maxSize uint64) {
+// TreeDynamicBytes trees a dynamic binary blob.
+func TreeDynamicBytes(h *Treerer, blob []byte, maxSize uint64) {
 	h.descendMixinLayer()
 	h.insertBlobChunks(blob)
 	h.ascendMixinLayer(uint64(len(blob)), (maxSize+31)/32)
 }
 
-// HashStaticObject hashes a static ssz object.
-func HashStaticObject(h *Hasher, obj StaticObject) {
+// TreeStaticObject trees a static ssz object.
+func TreeStaticObject(h *Treerer, obj StaticObject) {
 	h.descendLayer()
 	obj.DefineSSZ(h.codec)
 	h.ascendLayer(0)
 }
 
-// HashDynamicObject hashes a dynamic ssz object.
-func HashDynamicObject(h *Hasher, obj DynamicObject) {
+// TreeDynamicObject trees a dynamic ssz object.
+func TreeDynamicObject(h *Treerer, obj DynamicObject) {
 	h.descendLayer()
 	obj.DefineSSZ(h.codec)
 	h.ascendLayer(0)
 }
 
-// HashArrayOfBits hashes a static array of (packed) bits.
-func HashArrayOfBits[T commonBitsLengths](h *Hasher, bits *T) {
+// TreeArrayOfBits trees a static array of (packed) bits.
+func TreeArrayOfBits[T commonBitsLengths](h *Treerer, bits *T) {
 	// The code below should have used `*bits[:]`, alas Go's generics compiler
 	// is missing that (i.e. a bug): https://github.com/golang/go/issues/51740
-	h.hashBytes(unsafe.Slice(&(*bits)[0], len(*bits)))
+	h.treeBytes(unsafe.Slice(&(*bits)[0], len(*bits)))
 }
 
-// HashSliceOfBits hashes a dynamic slice of (packed) bits.
-func HashSliceOfBits(h *Hasher, bits bitfield.Bitlist, maxBits uint64) {
-	// Parse the bit-list into a hashable representation
+// TreeSliceOfBits trees a dynamic slice of (packed) bits.
+func TreeSliceOfBits(h *Treerer, bits bitfield.Bitlist, maxBits uint64) {
+	// Parse the bit-list into a treeable representation
 	var (
 		msb  = uint8(bitops.Len8(bits[len(bits)-1])) - 1
 		size = uint64((len(bits)-1)<<3 + int(msb))
@@ -197,12 +196,12 @@ func HashSliceOfBits(h *Hasher, bits bitfield.Bitlist, maxBits uint64) {
 	h.ascendMixinLayer(size, (maxBits+255)/256)
 }
 
-// HashArrayOfUint64s hashes a static array of uint64s.
+// TreeArrayOfUint64s trees a static array of uint64s.
 //
 // The reason the ns is passed by pointer and not by value is to prevent it from
 // escaping to the heap (and incurring an allocation) when passing it to the
-// hasher.
-func HashArrayOfUint64s[T commonUint64sLengths](h *Hasher, ns *T) {
+// treerer.
+func TreeArrayOfUint64s[T commonUint64sLengths](h *Treerer, ns *T) {
 	// The code below should have used `*blob[:]`, alas Go's generics compiler
 	// is missing that (i.e. a bug): https://github.com/golang/go/issues/51740
 	nums := unsafe.Slice(&(*ns)[0], len(*ns))
@@ -228,8 +227,8 @@ func HashArrayOfUint64s[T commonUint64sLengths](h *Hasher, ns *T) {
 	h.ascendLayer(0)
 }
 
-// HashSliceOfUint64s hashes a dynamic slice of uint64s.
-func HashSliceOfUint64s[T ~uint64](h *Hasher, ns []T, maxItems uint64) {
+// TreeSliceOfUint64s trees a dynamic slice of uint64s.
+func TreeSliceOfUint64s[T ~uint64](h *Treerer, ns []T, maxItems uint64) {
 	h.descendMixinLayer()
 	nums := ns
 
@@ -253,52 +252,52 @@ func HashSliceOfUint64s[T ~uint64](h *Hasher, ns []T, maxItems uint64) {
 	h.ascendMixinLayer(uint64(len(ns)), (maxItems*8+31)/32)
 }
 
-// HashArrayOfStaticBytes hashes a static array of static binary blobs.
+// TreeArrayOfStaticBytes trees a static array of static binary blobs.
 //
 // The reason the blobs is passed by pointer and not by value is to prevent it
 // from escaping to the heap (and incurring an allocation) when passing it to
 // the output stream.
-func HashArrayOfStaticBytes[T commonBytesArrayLengths[U], U commonBytesLengths](h *Hasher, blobs *T) {
+func TreeArrayOfStaticBytes[T commonBytesArrayLengths[U], U commonBytesLengths](h *Treerer, blobs *T) {
 	// The code below should have used `(*blobs)[:]`, alas Go's generics compiler
 	// is missing that (i.e. a bug): https://github.com/golang/go/issues/51740
-	HashUnsafeArrayOfStaticBytes(h, unsafe.Slice(&(*blobs)[0], len(*blobs)))
+	TreeUnsafeArrayOfStaticBytes(h, unsafe.Slice(&(*blobs)[0], len(*blobs)))
 }
 
-// HashUnsafeArrayOfStaticBytes hashes a static array of static binary blobs.
-func HashUnsafeArrayOfStaticBytes[T commonBytesLengths](h *Hasher, blobs []T) {
+// TreeUnsafeArrayOfStaticBytes trees a static array of static binary blobs.
+func TreeUnsafeArrayOfStaticBytes[T commonBytesLengths](h *Treerer, blobs []T) {
 	h.descendLayer()
 	for i := 0; i < len(blobs); i++ {
 		// The code below should have used `blobs[i][:]`, alas Go's generics compiler
 		// is missing that (i.e. a bug): https://github.com/golang/go/issues/51740
-		h.hashBytes(unsafe.Slice(&blobs[i][0], len(blobs[i])))
+		h.treeBytes(unsafe.Slice(&blobs[i][0], len(blobs[i])))
 	}
 	h.ascendLayer(0)
 }
 
-// HashCheckedArrayOfStaticBytes hashes a static array of static binary blobs.
-func HashCheckedArrayOfStaticBytes[T commonBytesLengths](h *Hasher, blobs []T) {
+// TreeCheckedArrayOfStaticBytes trees a static array of static binary blobs.
+func TreeCheckedArrayOfStaticBytes[T commonBytesLengths](h *Treerer, blobs []T) {
 	h.descendLayer()
 	for i := 0; i < len(blobs); i++ {
 		// The code below should have used `blobs[i][:]`, alas Go's generics compiler
 		// is missing that (i.e. a bug): https://github.com/golang/go/issues/51740
-		h.hashBytes(unsafe.Slice(&blobs[i][0], len(blobs[i])))
+		h.treeBytes(unsafe.Slice(&blobs[i][0], len(blobs[i])))
 	}
 	h.ascendLayer(0)
 }
 
-// HashSliceOfStaticBytes hashes a dynamic slice of static binary blobs.
-func HashSliceOfStaticBytes[T commonBytesLengths](h *Hasher, blobs []T, maxItems uint64) {
+// TreeSliceOfStaticBytes trees a dynamic slice of static binary blobs.
+func TreeSliceOfStaticBytes[T commonBytesLengths](h *Treerer, blobs []T, maxItems uint64) {
 	h.descendMixinLayer()
 	for i := 0; i < len(blobs); i++ {
 		// The code below should have used `blobs[i][:]`, alas Go's generics compiler
 		// is missing that (i.e. a bug): https://github.com/golang/go/issues/51740
-		h.hashBytes(unsafe.Slice(&blobs[i][0], len(blobs[i])))
+		h.treeBytes(unsafe.Slice(&blobs[i][0], len(blobs[i])))
 	}
 	h.ascendMixinLayer(uint64(len(blobs)), maxItems)
 }
 
-// HashSliceOfDynamicBytes hashes a dynamic slice of dynamic binary blobs.
-func HashSliceOfDynamicBytes(h *Hasher, blobs [][]byte, maxItems uint64, maxSize uint64) {
+// TreeSliceOfDynamicBytes trees a dynamic slice of dynamic binary blobs.
+func TreeSliceOfDynamicBytes(h *Treerer, blobs [][]byte, maxItems uint64, maxSize uint64) {
 	h.descendMixinLayer()
 	for _, blob := range blobs {
 		h.descendMixinLayer()
@@ -308,8 +307,8 @@ func HashSliceOfDynamicBytes(h *Hasher, blobs [][]byte, maxItems uint64, maxSize
 	h.ascendMixinLayer(uint64(len(blobs)), maxItems)
 }
 
-// HashSliceOfStaticObjects hashes a dynamic slice of static ssz objects.
-func HashSliceOfStaticObjects[T StaticObject](h *Hasher, objects []T, maxItems uint64) {
+// TreeSliceOfStaticObjects trees a dynamic slice of static ssz objects.
+func TreeSliceOfStaticObjects[T StaticObject](h *Treerer, objects []T, maxItems uint64) {
 	h.descendMixinLayer()
 	defer h.ascendMixinLayer(uint64(len(objects)), maxItems)
 
@@ -367,8 +366,8 @@ func HashSliceOfStaticObjects[T StaticObject](h *Hasher, objects []T, maxItems u
 	}
 }
 
-// HashSliceOfDynamicObjects hashes a dynamic slice of dynamic ssz objects.
-func HashSliceOfDynamicObjects[T DynamicObject](h *Hasher, objects []T, maxItems uint64) {
+// TreeSliceOfDynamicObjects hashes a dynamic slice of dynamic ssz objects.
+func TreeSliceOfDynamicObjects[T DynamicObject](h *Treerer, objects []T, maxItems uint64) {
 	h.descendMixinLayer()
 	for _, obj := range objects {
 		h.descendLayer()
@@ -378,9 +377,9 @@ func HashSliceOfDynamicObjects[T DynamicObject](h *Hasher, objects []T, maxItems
 	h.ascendMixinLayer(uint64(len(objects)), maxItems)
 }
 
-// hashBytes either appends the blob to the hasher's scratch space if it's small
+// treeBytes either appends the blob to the hasher's scratch space if it's small
 // enough to fit into a single chunk, or chunks it up and merkleizes it first.
-func (h *Hasher) hashBytes(blob []byte) {
+func (h *Treerer) treeBytes(blob []byte) {
 	// If the blob is small, accumulate as a single chunk
 	if len(blob) <= 32 {
 		var buffer [32]byte
@@ -395,7 +394,13 @@ func (h *Hasher) hashBytes(blob []byte) {
 }
 
 // insertChunk adds a chunk to the accumulators, collapsing matching pairs.
-func (h *Hasher) insertChunk(chunk [32]byte, depth int) {
+func (h *Treerer) insertChunk(chunk [32]byte, depth int) {
+	// Create a new leaf node
+	newNode := &Node{Hash: chunk}
+
+	// Insert the node into the accumulator
+	h.nodes = append(h.nodes, newNode)
+
 	// Insert the chunk into the accumulator
 	h.chunks = append(h.chunks, chunk)
 
@@ -419,6 +424,29 @@ func (h *Hasher) insertChunk(chunk [32]byte, depth int) {
 		return
 	}
 	for {
+
+		// We've reached exactly the batch number of chunks
+		nodes := len(h.nodes)
+		for i := nodes - hasherBatch; i < nodes; i += 2 {
+			left := h.nodes[i]
+			right := h.nodes[i+1]
+
+			parentHash := [][32]byte{[32]byte{}}
+			gohashtree.HashChunks(parentHash, [][32]byte{left.Hash, right.Hash})
+
+			parent := &Node{
+				Hash:  parentHash[0],
+				Left:  left,
+				Right: right,
+			}
+
+			left.Parent = parent
+			right.Parent = parent
+
+			h.nodes[i/2] = parent
+		}
+		h.nodes = h.nodes[:nodes-hasherBatch/2]
+
 		// We've reached **exactly** the batch number of chunks. Note, we're adding
 		// them one by one, so can't all of a sudden overshoot. Hash the next batch
 		// of chunks and update the trackers.
@@ -451,9 +479,13 @@ func (h *Hasher) insertChunk(chunk [32]byte, depth int) {
 	}
 }
 
+func (h *Treerer) Root() *Node {
+	return h.root
+}
+
 // insertBlobChunks splits up the blob into 32 byte chunks and adds them to the
 // accumulators, collapsing matching pairs.
-func (h *Hasher) insertBlobChunks(blob []byte) {
+func (h *Treerer) insertBlobChunks(blob []byte) {
 	var buffer [32]byte
 	for len(blob) >= 32 {
 		copy(buffer[:], blob)
@@ -469,23 +501,26 @@ func (h *Hasher) insertBlobChunks(blob []byte) {
 
 // descendLayer starts a new hashing layer, acting as a barrier to prevent the
 // chunks from being collapsed into previous pending ones.
-func (h *Hasher) descendLayer() {
+func (h *Treerer) descendLayer() {
 	h.layer++
 }
 
 // descendMixinLayer is similar to descendLayer, but actually descends two at the
 // same time, using the outer for mixing in a list length during ascent.
-func (h *Hasher) descendMixinLayer() {
+func (h *Treerer) descendMixinLayer() {
 	h.layer += 2
 }
 
 // ascendLayer terminates a hashing layer, moving the result up one level and
 // collapsing anything unblocked. The capacity param controls how many chunks
 // a dynamic list is expected to be composed of at maximum (0 == only balance).
-func (h *Hasher) ascendLayer(capacity uint64) {
+func (h *Treerer) ascendLayer(capacity uint64) {
 	// Before even considering extending the layer to capacity, balance any
 	// partial sub-tries to their completion.
 	h.balanceLayer()
+
+	h.root = h.nodes[len(h.nodes)-1]
+	h.nodes = h.nodes[:len(h.nodes)-1]
 
 	// Last group was reduced to a single root hash. If the capacity used during
 	// hashing it was less than what the container slot required, keep expanding
@@ -523,7 +558,7 @@ func (h *Hasher) ascendLayer(capacity uint64) {
 // balanceLayer can be used to take a partial hashing result of an unbalanced
 // trie and append enough empty chunks (virtually) at the end to collapse it
 // down to a single root.
-func (h *Hasher) balanceLayer() {
+func (h *Treerer) balanceLayer() {
 	// If the layer is incomplete, append in zero chunks. First up, before even
 	// caring about maximum length, we must balance the tree (i.e. reduce it to
 	// a single root hash).
@@ -542,9 +577,31 @@ func (h *Hasher) balanceLayer() {
 		// the previous one and then see.
 		if group.chunks&0x1 == 1 {
 			// Group unbalanced, expand with a zero sub-trie
-			h.chunks = append(h.chunks, hasherZeroCache[group.depth])
+			zeroNode := &Node{Hash: hasherZeroCache[group.depth]}
+			h.nodes = append(h.nodes, zeroNode)
 			group.chunks++
 		}
+
+		nodes := len(h.nodes)
+		for i := nodes - int(group.chunks); i < nodes; i += 2 {
+			left := h.nodes[i]
+			right := h.nodes[i+1]
+
+			parentHash := [][32]byte{[32]byte{}}
+			gohashtree.HashChunks(parentHash, [][32]byte{left.Hash, right.Hash})
+
+			parent := &Node{
+				Hash:  parentHash[0],
+				Left:  left,
+				Right: right,
+			}
+			left.Parent = parent
+			right.Parent = parent
+
+			h.nodes[i/2] = parent
+		}
+		h.nodes = h.nodes[:nodes-int(group.chunks)/2]
+
 		chunks := len(h.chunks)
 		gohashtree.HashChunks(h.chunks[chunks-int(group.chunks):], h.chunks[chunks-int(group.chunks):])
 		h.chunks = h.chunks[:chunks-int(group.chunks)>>1]
@@ -572,7 +629,7 @@ func (h *Hasher) balanceLayer() {
 
 // ascendMixinLayer is similar to ascendLayer, but actually ascends one for the
 // data content, and then mixes in the provided length and ascends once more.
-func (h *Hasher) ascendMixinLayer(size uint64, chunks uint64) {
+func (h *Treerer) ascendMixinLayer(size uint64, chunks uint64) {
 	// If no items have been added, there's nothing to ascend out of. Fix that
 	// corner-case here.
 	var buffer [32]byte
@@ -587,9 +644,12 @@ func (h *Hasher) ascendMixinLayer(size uint64, chunks uint64) {
 	h.ascendLayer(0) // length mixin
 }
 
-// Reset resets the Hasher obj
-func (h *Hasher) Reset() {
+// Reset resets the Treerer obj
+func (h *Treerer) Reset() {
 	h.chunks = h.chunks[:0]
 	h.groups = h.groups[:0]
 	h.threads = false
+
+	h.nodes = h.nodes[:0]
+	h.root = nil
 }

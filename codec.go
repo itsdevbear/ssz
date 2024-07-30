@@ -18,6 +18,7 @@ type Codec struct {
 	enc *Encoder
 	dec *Decoder
 	has *Hasher
+	tre *Treerer
 }
 
 // DefineEncoder uses a dedicated encoder in case the types SSZ conversion is for
@@ -53,6 +54,17 @@ func (c *Codec) DefineHasher(impl func(has *Hasher)) {
 	}
 }
 
+// DefineTreerer uses a dedicated treerer in case the types SSZ conversion is for
+// some reason asymmetric (e.g. encoding depends on fields, decoding depends on
+// outer context).
+//
+// In reality, it will be the live code run when the object is being parsed.
+func (c *Codec) DefineTreerer(impl func(tre *Treerer)) {
+	if c.tre != nil {
+		impl(c.tre)
+	}
+}
+
 // DefineBool defines the next field as a 1 byte boolean.
 func DefineBool[T ~bool](c *Codec, v *T) {
 	if c.enc != nil {
@@ -63,7 +75,12 @@ func DefineBool[T ~bool](c *Codec, v *T) {
 		DecodeBool(c.dec, v)
 		return
 	}
-	HashBool(c.has, *v)
+	if c.has != nil {
+		HashBool(c.has, *v)
+	}
+	if c.tre != nil {
+		TreeBool(c.tre, *v)
+	}
 }
 
 // DefineUint8 defines the next field as a uint8.
@@ -76,7 +93,14 @@ func DefineUint8[T ~uint8](c *Codec, n *T) {
 		DecodeUint8(c.dec, n)
 		return
 	}
-	HashUint8(c.has, *n)
+	if c.has != nil {
+		HashUint8(c.has, *n)
+		return
+	}
+	if c.tre != nil {
+		TreeUint8(c.tre, *n)
+		return
+	}
 }
 
 // DefineUint16 defines the next field as a uint16.
@@ -89,7 +113,14 @@ func DefineUint16[T ~uint16](c *Codec, n *T) {
 		DecodeUint16(c.dec, n)
 		return
 	}
-	HashUint16(c.has, *n)
+	if c.has != nil {
+		HashUint16(c.has, *n)
+		return
+	}
+	if c.tre != nil {
+		TreeUint16(c.tre, *n)
+		return
+	}
 }
 
 // DefineUint32 defines the next field as a uint32.
@@ -102,7 +133,15 @@ func DefineUint32[T ~uint32](c *Codec, n *T) {
 		DecodeUint32(c.dec, n)
 		return
 	}
-	HashUint32(c.has, *n)
+	if c.has != nil {
+		HashUint32(c.has, *n)
+		return
+	}
+	if c.tre != nil {
+		TreeUint32(c.tre, *n)
+		return
+	}
+
 }
 
 // DefineUint64 defines the next field as a uint64.
@@ -115,7 +154,14 @@ func DefineUint64[T ~uint64](c *Codec, n *T) {
 		DecodeUint64(c.dec, n)
 		return
 	}
-	HashUint64(c.has, *n)
+	if c.has != nil {
+		HashUint64(c.has, *n)
+		return
+	}
+	if c.tre != nil {
+		TreeUint64(c.tre, *n)
+		return
+	}
 }
 
 // DefineUint256 defines the next field as a uint256.
@@ -141,7 +187,14 @@ func DefineUint256BigInt(c *Codec, n **big.Int) {
 		DecodeUint256BigInt(c.dec, n)
 		return
 	}
-	HashUint256BigInt(c.has, *n)
+	if c.has != nil {
+		HashUint256BigInt(c.has, *n)
+		return
+	}
+	if c.tre != nil {
+		TreeUint256BigInt(c.tre, *n)
+		return
+	}
 }
 
 // DefineStaticBytes defines the next field as static binary blob. This method
@@ -155,7 +208,14 @@ func DefineStaticBytes[T commonBytesLengths](c *Codec, blob *T) {
 		DecodeStaticBytes(c.dec, blob)
 		return
 	}
-	HashStaticBytes(c.has, blob)
+	if c.has != nil {
+		HashStaticBytes(c.has, blob)
+		return
+	}
+	if c.tre != nil {
+		TreeStaticBytes(c.tre, blob)
+		return
+	}
 }
 
 // DefineCheckedStaticBytes defines the next field as static binary blob. This
@@ -170,7 +230,14 @@ func DefineCheckedStaticBytes(c *Codec, blob *[]byte, size uint64) {
 		DecodeCheckedStaticBytes(c.dec, blob, size)
 		return
 	}
-	HashCheckedStaticBytes(c.has, *blob)
+	if c.has != nil {
+		HashCheckedStaticBytes(c.has, *blob)
+		return
+	}
+	if c.tre != nil {
+		TreeCheckedStaticBytes(c.tre, *blob)
+		return
+	}
 }
 
 // DefineDynamicBytesOffset defines the next field as dynamic binary blob.
@@ -183,7 +250,14 @@ func DefineDynamicBytesOffset(c *Codec, blob *[]byte, maxSize uint64) {
 		DecodeDynamicBytesOffset(c.dec, blob)
 		return
 	}
-	HashDynamicBytes(c.has, *blob, maxSize)
+	if c.has != nil {
+		HashDynamicBytes(c.has, *blob, maxSize)
+		return
+	}
+	if c.tre != nil {
+		TreeDynamicBytes(c.tre, *blob, maxSize)
+		return
+	}
 }
 
 // DefineDynamicBytesContent defines the next field as dynamic binary blob.
@@ -209,7 +283,14 @@ func DefineStaticObject[T newableStaticObject[U], U any](c *Codec, obj *T) {
 		DecodeStaticObject(c.dec, obj)
 		return
 	}
-	HashStaticObject(c.has, *obj)
+	if c.has != nil {
+		HashStaticObject(c.has, *obj)
+		return
+	}
+	if c.tre != nil {
+		TreeStaticObject(c.tre, *obj)
+		return
+	}
 }
 
 // DefineDynamicObjectOffset defines the next field as a dynamic ssz object.
@@ -222,7 +303,14 @@ func DefineDynamicObjectOffset[T newableDynamicObject[U], U any](c *Codec, obj *
 		DecodeDynamicObjectOffset(c.dec, obj)
 		return
 	}
-	HashDynamicObject(c.has, *obj)
+	if c.has != nil {
+		HashDynamicObject(c.has, *obj)
+		return
+	}
+	if c.tre != nil {
+		TreeDynamicObject(c.tre, *obj)
+		return
+	}
 }
 
 // DefineDynamicObjectContent defines the next field as a dynamic ssz object.
@@ -248,7 +336,12 @@ func DefineArrayOfBits[T commonBitsLengths](c *Codec, bits *T, size uint64) {
 		DecodeArrayOfBits(c.dec, bits, size)
 		return
 	}
-	HashArrayOfBits(c.has, bits)
+	if c.has != nil {
+		HashArrayOfBits(c.has, bits)
+	}
+	if c.tre != nil {
+		TreeArrayOfBits(c.tre, bits)
+	}
 }
 
 // DefineSliceOfBitsOffset defines the next field as a dynamic slice of (packed) bits.
@@ -261,7 +354,14 @@ func DefineSliceOfBitsOffset(c *Codec, bits *bitfield.Bitlist, maxBits uint64) {
 		DecodeSliceOfBitsOffset(c.dec, bits)
 		return
 	}
-	HashSliceOfBits(c.has, *bits, maxBits)
+	if c.has != nil {
+		HashSliceOfBits(c.has, *bits, maxBits)
+		return
+	}
+	if c.tre != nil {
+		TreeSliceOfBits(c.tre, *bits, maxBits)
+		return
+	}
 }
 
 // DefineSliceOfBitsContent defines the next field as a dynamic slice of (packed) bits.
@@ -287,7 +387,13 @@ func DefineArrayOfUint64s[T commonUint64sLengths](c *Codec, ns *T) {
 		DecodeArrayOfUint64s(c.dec, ns)
 		return
 	}
-	HashArrayOfUint64s(c.has, ns)
+	if c.has != nil {
+		HashArrayOfUint64s(c.has, ns)
+		return
+	}
+	if c.tre != nil {
+		TreeArrayOfUint64s(c.tre, ns)
+	}
 }
 
 // DefineSliceOfUint64sOffset defines the next field as a dynamic slice of uint64s.
@@ -300,7 +406,13 @@ func DefineSliceOfUint64sOffset[T ~uint64](c *Codec, ns *[]T, maxItems uint64) {
 		DecodeSliceOfUint64sOffset(c.dec, ns)
 		return
 	}
-	HashSliceOfUint64s(c.has, *ns, maxItems)
+	if c.has != nil {
+		HashSliceOfUint64s(c.has, *ns, maxItems)
+		return
+	}
+	if c.tre != nil {
+		TreeSliceOfUint64s(c.tre, *ns, maxItems)
+	}
 }
 
 // DefineSliceOfUint64sContent defines the next field as a dynamic slice of uint64s.
@@ -327,7 +439,13 @@ func DefineArrayOfStaticBytes[T commonBytesArrayLengths[U], U commonBytesLengths
 		DecodeArrayOfStaticBytes[T, U](c.dec, blobs)
 		return
 	}
-	HashArrayOfStaticBytes[T, U](c.has, blobs)
+	if c.has != nil {
+		HashArrayOfStaticBytes[T, U](c.has, blobs)
+		return
+	}
+	if c.tre != nil {
+		TreeArrayOfStaticBytes[T, U](c.tre, blobs)
+	}
 }
 
 // DefineUnsafeArrayOfStaticBytes defines the next field as a static array of
@@ -343,7 +461,13 @@ func DefineUnsafeArrayOfStaticBytes[T commonBytesLengths](c *Codec, blobs []T) {
 		DecodeUnsafeArrayOfStaticBytes(c.dec, blobs)
 		return
 	}
-	HashUnsafeArrayOfStaticBytes(c.has, blobs)
+	if c.has != nil {
+		HashUnsafeArrayOfStaticBytes(c.has, blobs)
+		return
+	}
+	if c.tre != nil {
+		TreeUnsafeArrayOfStaticBytes(c.tre, blobs)
+	}
 }
 
 // DefineCheckedArrayOfStaticBytes defines the next field as a static array of
@@ -358,7 +482,13 @@ func DefineCheckedArrayOfStaticBytes[T commonBytesLengths](c *Codec, blobs *[]T,
 		DecodeCheckedArrayOfStaticBytes(c.dec, blobs, size)
 		return
 	}
-	HashCheckedArrayOfStaticBytes(c.has, *blobs)
+	if c.has != nil {
+		HashCheckedArrayOfStaticBytes(c.has, *blobs)
+		return
+	}
+	if c.tre != nil {
+		TreeCheckedArrayOfStaticBytes(c.tre, *blobs)
+	}
 }
 
 // DefineSliceOfStaticBytesOffset defines the next field as a dynamic slice of static
@@ -372,7 +502,13 @@ func DefineSliceOfStaticBytesOffset[T commonBytesLengths](c *Codec, bytes *[]T, 
 		DecodeSliceOfStaticBytesOffset(c.dec, bytes)
 		return
 	}
-	HashSliceOfStaticBytes(c.has, *bytes, maxItems)
+	if c.has != nil {
+		HashSliceOfStaticBytes(c.has, *bytes, maxItems)
+		return
+	}
+	if c.tre != nil {
+		TreeSliceOfStaticBytes(c.tre, *bytes, maxItems)
+	}
 }
 
 // DefineSliceOfStaticBytesContent defines the next field as a dynamic slice of static
@@ -400,7 +536,13 @@ func DefineSliceOfDynamicBytesOffset(c *Codec, blobs *[][]byte, maxItems uint64,
 		DecodeSliceOfDynamicBytesOffset(c.dec, blobs)
 		return
 	}
-	HashSliceOfDynamicBytes(c.has, *blobs, maxItems, maxSize)
+	if c.has != nil {
+		HashSliceOfDynamicBytes(c.has, *blobs, maxItems, maxSize)
+		return
+	}
+	if c.tre != nil {
+		TreeSliceOfDynamicBytes(c.tre, *blobs, maxItems, maxSize)
+	}
 }
 
 // DefineSliceOfDynamicBytesContent defines the next field as a dynamic slice of dynamic
@@ -428,7 +570,13 @@ func DefineSliceOfStaticObjectsOffset[T newableStaticObject[U], U any](c *Codec,
 		DecodeSliceOfStaticObjectsOffset(c.dec, objects)
 		return
 	}
-	HashSliceOfStaticObjects(c.has, *objects, maxItems)
+	if c.has != nil {
+		HashSliceOfStaticObjects(c.has, *objects, maxItems)
+		return
+	}
+	if c.tre != nil {
+		TreeSliceOfStaticObjects(c.tre, *objects, maxItems)
+	}
 }
 
 // DefineSliceOfStaticObjectsContent defines the next field as a dynamic slice of static
@@ -456,7 +604,13 @@ func DefineSliceOfDynamicObjectsOffset[T newableDynamicObject[U], U any](c *Code
 		DecodeSliceOfDynamicObjectsOffset(c.dec, objects)
 		return
 	}
-	HashSliceOfDynamicObjects(c.has, *objects, maxItems)
+	if c.has != nil {
+		HashSliceOfDynamicObjects(c.has, *objects, maxItems)
+		return
+	}
+	if c.tre != nil {
+		TreeSliceOfDynamicObjects(c.tre, *objects, maxItems)
+	}
 }
 
 // DefineSliceOfDynamicObjectsContent defines the next field as a dynamic slice of dynamic

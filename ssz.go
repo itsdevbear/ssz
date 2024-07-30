@@ -76,6 +76,16 @@ var hasherPool = sync.Pool{
 	},
 }
 
+// treePool is a pool of SSZ tree builders to reuse some tiny internal helpers
+// without hitting Go's GC constantly.
+var treePool = sync.Pool{
+	New: func() any {
+		codec := &Codec{tre: new(Treerer)}
+		codec.tre.codec = codec
+		return codec
+	},
+}
+
 // EncodeToStream serializes the object into a data stream. Do not use this
 // method with a bytes.Buffer to write into a []byte slice, as that will do
 // double the byte copying. For that use case, use EncodeToBytes instead.
@@ -235,6 +245,45 @@ func HashConcurrent(obj Object) [32]byte {
 		panic(fmt.Sprintf("unfinished hashing: left %v", codec.has.groups))
 	}
 	return codec.has.chunks[0]
+}
+
+// TreeSequential computes the ssz merkle root of the object on a single thread.
+// This is useful for processing small objects with stable runtime and O(1) GC
+// guarantees.
+func TreeSequential(obj Object) [32]byte {
+	codec := treePool.Get().(*Codec)
+	defer treePool.Put(codec)
+	defer codec.tre.Reset()
+
+	codec.tre.descendLayer()
+	obj.DefineSSZ(codec)
+	codec.tre.ascendLayer(0)
+
+	if len(codec.tre.chunks) != 1 {
+		panic(fmt.Sprintf("unfinished hashing: left %v", codec.has.groups))
+	}
+
+	return codec.tre.Root().Hash
+}
+
+// TreeConcurrent computes the ssz merkle root of the object on potentially multiple
+// concurrent threads (iff some data segments are large enough to be worth it). This
+// is useful for processing large objects, but will place a bigger load on your CPU
+// and GC; and might be more variable timing wise depending on other load.
+func TreeConcurrent(obj Object) [32]byte {
+	codec := hasherPool.Get().(*Codec)
+	defer hasherPool.Put(codec)
+	defer codec.tre.Reset()
+
+	codec.tre.threads = true
+	codec.tre.descendLayer()
+	obj.DefineSSZ(codec)
+	codec.tre.ascendLayer(0)
+
+	if len(codec.tre.chunks) != 1 {
+		panic(fmt.Sprintf("unfinished hashing: left %v", codec.has.groups))
+	}
+	return codec.tre.Root().Hash
 }
 
 // Size retrieves the size of a ssz object, independent if it's a static or a
