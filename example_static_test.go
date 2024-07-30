@@ -7,6 +7,7 @@ package ssz_test
 import (
 	"bytes"
 	"fmt"
+	"testing"
 
 	"github.com/karalabe/ssz"
 )
@@ -40,4 +41,11 @@ func ExampleEncodeStaticObject() {
 	// Output:
 	// ssz: 0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 	// hash: 0xdb56114e00fdd4c1f85c892bf35ac9a89289aaecb1ebd0a96cde606a748b5d71
+}
+
+func TestTreeHashEquivalence(t *testing.T) {
+	w := new(Withdrawal)
+	if ssz.HashSequential(w) != ssz.TreeSequential(w) {
+		t.Errorf("tree hash mismatch: %x != %x", ssz.HashConcurrent(w), ssz.TreeSequential(w))
+	}
 }
