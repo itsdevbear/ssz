@@ -265,12 +265,8 @@ func TreeSequential(obj Object) *TreeNode {
 		panic(fmt.Sprintf("unfinished hashing: left %v", codec.tre.groups))
 	}
 
-	fmt.Println("Leaves:")
-	for i, leaf := range codec.tre.nodes {
-		fmt.Printf("Leaf %d: %v\n", i, leaf.Value)
-	}
-	// return codec.tre.createTree()
-	return codec.tre.nodes[len(codec.tre.nodes)-2]
+	return codec.tre.createTree()[1]
+	//return codec.tre.nodes[len(codec.tre.nodes)-2]
 }
 
 // TreeConcurrent computes the SSZ Merkle tree of the object on a multiple threads.

@@ -7,8 +7,6 @@ package ssz
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
-	"math"
 	"math/big"
 	bitops "math/bits"
 	"runtime"
@@ -16,7 +14,6 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/prysmaticlabs/go-bitfield"
-	"github.com/prysmaticlabs/gohashtree"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -35,35 +32,12 @@ type TreeNode struct {
 	Value   [32]byte
 	Left    *TreeNode
 	Right   *TreeNode
-	IsEmpty bool
-	Depth   int
-}
-
-// NewNodeWithValue initializes a leaf node.
-func NewNodeWithValue(value [32]byte) *TreeNode {
-	return &TreeNode{Left: nil, Right: nil, Value: value}
-}
-
-func NewEmptyNode(zeroOrderHash [32]byte) *TreeNode {
-	return &TreeNode{Left: nil, Right: nil, Value: zeroOrderHash, IsEmpty: true}
-}
-
-// NewNodeWithLR initializes a branch node.
-func NewNodeWithLR(left, right *TreeNode) *TreeNode {
-	return &TreeNode{Left: left, Right: right, Value: [32]byte{}}
 }
 
 // Treerer2 is an SSZ Merkle Hash Root computer.
 type Treerer2 struct {
-	threads bool // Whether threaded hashing is allowed or not
-
-	nodes  []*TreeNode
-	chunks [][32]byte   // Scratch space for in-progress hashing chunks
-	groups []groupStats // Hashing progress tracking for the chunk groups
-	layer  int          // Layer depth being hasher now
-
-	codec  *Codec // Self-referencing to pass DefineSSZ calls through (API trick)
-	bitbuf []byte // Bitlist conversion buffer
+	Hasher
+	tree  []*TreeNode
 }
 
 // TreeBool hashes a boolean.
@@ -380,317 +354,50 @@ func TreeSliceOfDynamicObjects[T DynamicObject](h *Hasher, objects []T, maxItems
 	h.ascendMixinLayer(uint64(len(objects)), maxItems)
 }
 
-// hashBytes either appends the blob to the hasher's scratch space if it's small
-// enough to fit into a single chunk, or chunks it up and merkleizes it first.
-func (h *Treerer2) hashBytes(blob []byte) {
-	// If the blob is small, accumulate as a single chunk
-	if len(blob) <= 32 {
-		var buffer [32]byte
-		copy(buffer[:], blob)
-		h.insertChunk(buffer, 0)
-		return
-	}
-	// Otherwise hash it as its own tree
-	h.descendLayer()
-	h.insertBlobChunks(blob)
-	h.ascendLayer(0)
+func (h *Treerer2) createTree() []*TreeNode {
+        length := len(h.chunks)
+        if length == 0 {
+                return nil
+        }
+        leaves := make([]*TreeNode, length)
+        for i, c := range h.chunks {
+                leaves[i] = &TreeNode{Left:nil, Right:nil, Value:c,}
+        }
+        bottomLength := ceilPowerOfTwo(length)
+        h.tree = make([]*TreeNode, 2*bottomLength)
+        copy(h.tree[bottomLength:bottomLength+length], leaves)
+
+        for i := bottomLength - 1; i > 0 ; i-- {
+                left := h.tree[2*i]
+                right := h.tree[2*i+1]
+                if left == nil && right == nil {
+                        continue
+                }
+                if right == nil {
+                        right = &TreeNode{Value: hasherZeroCache[i],}
+                        h.tree[2*i+1] = right
+                }
+                h.tree[i] = &TreeNode{
+                        Left: left,
+                        Right: right,
+                        Value: sha256.Sum256(append(left.Value[:], right.Value[:]...)),
+                }
+        }
+        return h.tree
 }
 
-func (h *Treerer2) insertNode(value [32]byte) {
-	h.nodes = append(h.nodes, &TreeNode{
-		Value: value,
-	})
+func ceilPowerOfTwo(u int) int {
+        if u == 0 {
+                return 1
+        }
+        u--
+        u |= u >> 1
+        u |= u >> 2
+        u |= u >> 4
+        u |= u >> 8
+        u |= u >> 16
+        u |= u >> 32
+        u++
+        return u
 }
 
-// insertChunk adds a chunk to the accumulators, collapsing matching pairs.
-func (h *Treerer2) insertChunk(chunk [32]byte, depth int) {
-	// Insert the chunk into the accumulator
-	h.chunks = append(h.chunks, chunk)
-
-	// If the depth tracker is at the leaf level, bump the leaf count
-	groups := len(h.groups)
-	if groups > 0 && h.groups[groups-1].layer == h.layer && h.groups[groups-1].depth == depth {
-		h.groups[groups-1].chunks++
-		fmt.Println("not new leaf group")
-	} else {
-		// New leaf group, create it and early return. Nothing to hash with only
-		// one leaf in our chunk list.
-		h.groups = append(h.groups, groupStats{
-			layer:  h.layer,
-			depth:  depth,
-			chunks: 1,
-		})
-		fmt.Println("Inserting new node group during insertChunk:", chunk, depth)
-		h.insertNode(chunk)
-		// Mark inserting a new leaf node
-		return
-	}
-	// Leaf counter incremented, if not yet enough for a hashing round, return
-	group := h.groups[groups-1]
-	if group.chunks != hasherBatch {
-		fmt.Println("Inserting new node not enough for hasing during insertChunk:", chunk, depth)
-		h.insertNode(chunk)
-		return
-	}
-	for {
-		// We've reached **exactly** the batch number of chunks. Note, we're adding
-		// them one by one, so can't all of a sudden overshoot. Hash the next batch
-		// of chunks and update the trackers.
-		chunks := len(h.chunks)
-		fmt.Println("HASHING BATCH")
-		gohashtree.HashChunks(h.chunks[chunks-hasherBatch:], h.chunks[chunks-hasherBatch:])
-		h.chunks = h.chunks[:chunks-hasherBatch/2]
-
-		fmt.Println("BET")
-		for i := 0; i < hasherBatch/2; i++ {
-			fmt.Println("Inserting new internal node group during insertChunk:", h.chunks[chunks-hasherBatch+i])
-			h.insertNode(h.chunks[chunks-hasherBatch+i])
-		}
-
-		group.depth++
-		group.chunks >>= 1
-
-		// The last group tracker we've just hashed needs to be either updated to
-		// the new level count, or merged into the previous one if they share all
-		// the layer/depth params.
-		if groups > 1 {
-			prev := h.groups[groups-2]
-			if prev.layer == group.layer && prev.depth == group.depth {
-				// Two groups can be merged, will trigger a new collapse round
-				prev.chunks += group.chunks
-				group = prev
-
-				groups--
-				continue
-			}
-		}
-		// Either have a single group, or the previous is from a different layer
-		// or depth level, update the tail and return
-		h.groups = h.groups[:groups]
-		h.groups[groups-1] = group
-		return
-	}
-}
-
-// insertBlobChunks splits up the blob into 32 byte chunks and adds them to the
-// accumulators, collapsing matching pairs.
-func (h *Treerer2) insertBlobChunks(blob []byte) {
-	var buffer [32]byte
-	for len(blob) >= 32 {
-		copy(buffer[:], blob)
-		h.insertChunk(buffer, 0)
-		blob = blob[32:]
-	}
-	if len(blob) > 0 {
-		buffer = [32]byte{}
-		copy(buffer[:], blob)
-		h.insertChunk(buffer, 0)
-	}
-}
-
-// descendLayer starts a new hashing layer, acting as a barrier to prevent the
-// chunks from being collapsed into previous pending ones.
-func (h *Treerer2) descendLayer() {
-	h.layer++
-}
-
-// descendMixinLayer is similar to descendLayer, but actually descends two at the
-// same time, using the outer for mixing in a list length during ascent.
-func (h *Treerer2) descendMixinLayer() {
-	h.layer += 2
-}
-
-// ascendLayer terminates a hashing layer, moving the result up one level and
-// collapsing anything unblocked. The capacity param controls how many chunks
-// a dynamic list is expected to be composed of at maximum (0 == only balance).
-func (h *Treerer2) ascendLayer(capacity uint64) {
-	// Before even considering extending the layer to capacity, balance any
-	// partial sub-tries to their completion.
-	h.balanceLayer()
-
-	// Last group was reduced to a single root hash. If the capacity used during
-	// hashing it was less than what the container slot required, keep expanding
-	// it with empty sibling tries.
-	for {
-		groups := len(h.groups)
-
-		// If we've used up the required capacity, stop expanding
-		group := h.groups[groups-1]
-		if (1 << group.depth) >= capacity {
-			break
-		}
-		// Last group requires expansion, hash in a new empty sibling trie
-		h.chunks = append(h.chunks, hasherZeroCache[group.depth])
-
-		chunks := len(h.chunks)
-		gohashtree.HashChunks(h.chunks[chunks-2:], h.chunks[chunks-2:])
-		h.chunks = h.chunks[:chunks-1]
-		for i := 0; i < hasherBatch/2; i++ {
-			h.insertNode(h.chunks[i])
-			fmt.Println("Inserting new node during ascend", h.chunks[i])
-		}
-
-		h.groups[groups-1].depth++
-	}
-	// Ascend from the previous hashing layer
-	h.layer--
-
-	chunks := len(h.chunks)
-	root := h.chunks[chunks-1]
-	h.chunks = h.chunks[:chunks-1]
-
-	groups := len(h.groups)
-	h.groups = h.groups[:groups-1]
-
-	h.insertChunk(root, 0)
-}
-
-// balanceLayer can be used to take a partial hashing result of an unbalanced
-// trie and append enough empty chunks (virtually) at the end to collapse it
-// down to a single root.
-func (h *Treerer2) balanceLayer() {
-	// If the layer is incomplete, append in zero chunks. First up, before even
-	// caring about maximum length, we must balance the tree (i.e. reduce it to
-	// a single root hash).
-	for {
-		groups := len(h.groups)
-
-		// If the last layer was reduced to one root, we've balanced the tree
-		group := h.groups[groups-1]
-		if group.chunks == 1 {
-			if groups == 1 || h.groups[groups-2].layer != group.layer {
-				return
-			}
-		}
-		// Either group has multiple chunks still, or there are multiple entire
-		// groups in this layer. Either way, we need to collapse this group into
-		// the previous one and then see.
-		if group.chunks&0x1 == 1 {
-			// Group unbalanced, expand with a zero sub-trie
-			h.chunks = append(h.chunks, hasherZeroCache[group.depth])
-			group.chunks++
-		}
-		chunks := len(h.chunks)
-		gohashtree.HashChunks(h.chunks[chunks-int(group.chunks):], h.chunks[chunks-int(group.chunks):])
-		h.chunks = h.chunks[:chunks-int(group.chunks)>>1]
-		for chunk := 0; chunk < len(h.chunks); chunk++ {
-			fmt.Println("Inserting new node during balanceLayer", h.chunks[chunk])
-			h.insertNode(h.chunks[chunk])
-		}
-		group.depth++
-		group.chunks >>= 1
-
-		// The last group tracker we've just hashed needs to be either updated to
-		// the new level count, or merged into the previous one if they share all
-		// the layer/depth params.
-		if groups > 1 {
-			prev := h.groups[groups-2]
-			if prev.layer == group.layer && prev.depth == group.depth {
-				// Two groups can be merged, may trigger a new collapse round
-				h.groups[groups-2].chunks += group.chunks
-				h.groups = h.groups[:groups-1]
-				continue
-			}
-		}
-		// Either have a single group, or the previous is from a different layer
-		// or depth level, update the tail and see if more balancing is needed
-		h.groups[groups-1] = group
-	}
-}
-
-// ascendMixinLayer is similar to ascendLayer, but actually ascends one for the
-// data content, and then mixes in the provided length and ascends once more.
-func (h *Treerer2) ascendMixinLayer(size uint64, chunks uint64) {
-	// If no items have been added, there's nothing to ascend out of. Fix that
-	// corner-case here.
-	var buffer [32]byte
-	if size == 0 {
-		h.insertChunk(buffer, 0)
-	}
-	h.ascendLayer(chunks) // data content
-
-	binary.LittleEndian.PutUint64(buffer[:8], size)
-	h.insertChunk(buffer, 0)
-
-	h.ascendLayer(0) // length mixin
-}
-
-// Reset resets the Hasher obj
-func (h *Treerer2) Reset() {
-	h.chunks = h.chunks[:0]
-	h.groups = h.groups[:0]
-	h.threads = false
-}
-
-// createTree constructs the Merkle tree from the leaf nodes
-func (h *Treerer2) createTree() *TreeNode {
-	fmt.Printf("Starting createTree with %d nodes\n", len(h.nodes))
-	if len(h.nodes) == 0 {
-		fmt.Println("No nodes, returning nil")
-		return nil
-	}
-
-	numnodes := len(h.nodes)
-	depth := floorLog2(numnodes)
-
-	// Start with the leaf nodes
-	currentLevel := h.nodes
-
-	for i := range currentLevel {
-		currentLevel[i].Depth = depth
-	}
-
-	// Continue building levels until we reach the root
-	for len(currentLevel) > 1 {
-		fmt.Printf("Processing level with %d nodes\n", len(currentLevel))
-		var nextLevel []*TreeNode
-
-		for i := 0; i < len(currentLevel); i += 2 {
-			left := currentLevel[i]
-			var right *TreeNode
-
-			if i+1 < len(currentLevel) {
-				right = currentLevel[i+1]
-			} else {
-				// If there's an odd number of nodes, duplicate the last one
-				right = &TreeNode{Value: hasherZeroCache[left.Depth]}
-				fmt.Println("Odd number of nodes, duplicating last one")
-			}
-
-			// Create a new parent node
-			parent := &TreeNode{
-				Left:  left,
-				Right: right,
-				Depth: left.Depth - 1,
-			}
-
-			// Hash the concatenation of left and right child values
-			var data [64]byte
-			copy(data[:32], left.Value[:])
-			copy(data[32:], right.Value[:])
-			parent.Value = sha256.Sum256(data[:])
-
-			fmt.Printf("Created parent node at depth %d with hash %x\n", parent.Depth, parent.Value)
-
-			nextLevel = append(nextLevel, parent)
-		}
-
-		currentLevel = nextLevel
-	}
-
-	// The last remaining node is the root
-	fmt.Printf("Returning root node with hash %x\n", currentLevel[0].Value)
-	return currentLevel[0]
-}
-
-func isPowerOfTwo(n int) bool {
-	return (n & (n - 1)) == 0
-}
-
-func floorLog2(n int) int {
-	return int(math.Floor(math.Log2(float64(n))))
-}
-
-func powerTwo(n int) int {
-	return int(math.Pow(2, float64(n)))
-}
