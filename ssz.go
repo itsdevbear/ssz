@@ -266,7 +266,6 @@ func TreeSequential(obj Object) *TreeNode {
 	}
 
 	return codec.tre.createTree()[1]
-	//return codec.tre.nodes[len(codec.tre.nodes)-2]
 }
 
 // TreeConcurrent computes the SSZ Merkle tree of the object on a multiple threads.

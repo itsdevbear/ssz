@@ -17,15 +17,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func init() {
-	var buf [64]byte
-	for i := 0; i < len(hasherZeroCache)-1; i++ {
-		copy(buf[:32], hasherZeroCache[i][:])
-		copy(buf[32:], hasherZeroCache[i][:])
-
-		hasherZeroCache[i+1] = sha256.Sum256(buf[:])
-	}
-}
+var zeroChunk [32]byte
 
 // TreeNode represents a node in the Merkle tree
 type TreeNode struct {
@@ -38,6 +30,7 @@ type TreeNode struct {
 type Treerer2 struct {
 	Hasher
 	tree  []*TreeNode
+	thunks [][32]byte
 }
 
 // TreeBool hashes a boolean.
@@ -354,13 +347,19 @@ func TreeSliceOfDynamicObjects[T DynamicObject](h *Hasher, objects []T, maxItems
 	h.ascendMixinLayer(uint64(len(objects)), maxItems)
 }
 
+func (h *Treerer2) insertChunk(chunk [32]byte, depth int) {
+	h.Hasher.insertChunk(chunk, depth)
+	h.thunks = make([][32]byte, len(h.chunks))
+	copy(h.thunks, h.chunks)
+}
+
 func (h *Treerer2) createTree() []*TreeNode {
-        length := len(h.chunks)
+        length := len(h.thunks)
         if length == 0 {
                 return nil
         }
         leaves := make([]*TreeNode, length)
-        for i, c := range h.chunks {
+        for i, c := range h.thunks {
                 leaves[i] = &TreeNode{Left:nil, Right:nil, Value:c,}
         }
         bottomLength := ceilPowerOfTwo(length)
@@ -374,7 +373,7 @@ func (h *Treerer2) createTree() []*TreeNode {
                         continue
                 }
                 if right == nil {
-                        right = &TreeNode{Value: hasherZeroCache[i],}
+                        right = &TreeNode{Value: zeroChunk,}
                         h.tree[2*i+1] = right
                 }
                 h.tree[i] = &TreeNode{
