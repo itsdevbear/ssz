@@ -49,7 +49,7 @@ func TestEncodeStaticObject(t *testing.T) {
 	}
 }
 
-func TestTreeerSymmetricObject(t *testing.T) {
+func TestTreererSymmetricObject(t *testing.T) {
 	withdrawal := &Withdrawal{
 		Index:     11,
 		Validator: 12,
@@ -63,5 +63,4 @@ func TestTreeerSymmetricObject(t *testing.T) {
 	if treeNode.Value != hashNode {
 		t.Errorf("Tree hash mismatch.\nGot:  %#x\nWant: %#x", treeNode.Value, hashNode)
 	}
-	panic("done")
 }
