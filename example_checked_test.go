@@ -33,6 +33,7 @@ func ExampleDecodeCheckedObject() {
 	if err := ssz.DecodeFromBytes(blob, obj); err != nil {
 		panic(err)
 	}
+
 	fmt.Printf("obj: %#x\n", obj)
 	// Output:
 	// obj: &{0x0 0x0 0x0000000000000000000000000000000000000000 0x0}
